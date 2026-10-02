@@ -59,10 +59,23 @@ Copies the forest (the input is never modified) and adds the branches `instLumiI
 ## 4. Make the analysis ntuple
 
 ```bash
-./analyze.exe <..._wLumi.root> <ntuple.root>
+./analyze.exe <..._wLumi.root> <ntuple.root> [triggerSelection=0] [goodlumi.json]
+./analyze.exe --help
 ```
 
-Reads the `_wLumi` file through `lumimessenger.h`, keeps only zero-bias-triggered events (`isZeroBias*`) and writes a TNtuple with `instLumi, lumiLeveled, ZDCsumPlus, ZDCsumMinus, HFEMaxPlus_eta5, HFEMaxMinus_eta5, nVtx, nTrackInAcceptanceHP`. Per-forest ntuples (HIForward0-23) are in `rootfiles/tuple_*_wLumi.root`; merge with `hadd` if you use several.
+Reads the `_wLumi` file through `lumimessenger.h`, keeps only events passing `triggerSelection` and writes a TNtuple with `instLumi, lumiLeveled, ZDCsumPlus, ZDCsumMinus, HFEMaxPlus_eta5, HFEMaxMinus_eta5, nVtx, nTrackInAcceptanceHP, Run, Lumi`. Per-forest ntuples (HIForward0-23) are in `rootfiles/tuple_*_wLumi.root`; merge with `hadd` if you use several.
+
+`triggerSelection` (optional integer, default 0; anything else is rejected):
+
+| value | selection |
+|---|---|
+| `0` | any zero-bias UPC path (`isZeroBias*`) |
+| `-1` | `isNotBptxOR` or `isUnpairedBunchBptxMinus` or `isUnpairedBunchBptxPlus` |
+| `-2` | `isUnpairedBunchBptxMinus` |
+| `-3` | `isUnpairedBunchBptxPlus` |
+| `-4` | `isNotBptxOR` |
+
+It also refuses identical input/output paths and warns if no event passes.
 
 ## 5. Define the luminosity bins (only when the dataset changes)
 
@@ -70,29 +83,31 @@ Reads the `_wLumi` file through `lumimessenger.h`, keeps only zero-bias-triggere
 
 ## 6. Plots and fits
 
-Both `plotAndFit.exe` and `plotHF.exe` take the ntuple, a `TAG`, and an optional `leveled` flag:
+Both `plotAndFit.exe` and `plotHF.exe` take the ntuple, a `TAG`, and an optional `leveled` flag (3rd argument):
 
 - `-1` (default): no cut
 - `0`: non-leveled lumisections only (output tag gets `_notleveled`)
 - `1`: leveled lumisections only (output tag gets `_leveled`)
 
-Output goes to `outputs/<TAG>[_leveled|_notleveled]/` (`Main.root` + PDFs).
+An optional 4th argument `noZDCcut` (default 0): `1` applies no ZDC value cut (every event fills both the An0n and 0nAn histograms, so they are identical; in `plotHF` all HF histograms use the wide range) and appends `_noZDCcut` to the output tag. Default is 0.
+
+Output goes to `outputs/<TAG>[_leveled|_notleveled][_noZDCcut]/` (`Main.root` + PDFs).
 
 ### ZDC
 
 ```bash
 cd ZDCStudies
-./plotAndFit.exe <ntuple.root> <TAG> [leveled]     # ZDC spectra per lumi bin (0nAn / An0n), fits
+./plotAndFit.exe <ntuple.root> <TAG> [leveled] [noZDCcut]     # ZDC spectra per lumi bin (0nAn / An0n), fits
 ./plotMeanSigmaVsLumi.exe <TAG>                    # reads outputs/<TAG>/Main.root -> mean_vs_lumi.pdf, sigma_vs_lumi.pdf
 ```
 
-Run `plotAndFit.exe` first. Give `plotMeanSigmaVsLumi.exe` the full output tag, including any `_leveled`/`_notleveled` suffix.
+Run `plotAndFit.exe` first. Give `plotMeanSigmaVsLumi.exe` the full output tag, including any `_leveled`/`_notleveled`/`_noZDCcut` suffix.
 
 ### HF
 
 ```bash
 cd HFStudies
-./plotHF.exe <ntuple.root> <TAG> [leveled]         # HF energy spectra per lumi bin, fraction above 16 vs lumi
+./plotHF.exe <ntuple.root> <TAG> [leveled] [noZDCcut]         # HF energy spectra per lumi bin, fraction above 16 vs lumi
 ```
 
 ## Example (HIForward0)
@@ -103,3 +118,19 @@ TAG=20260928_Dzero_260426-yrefmva_PbPbUPC_HIForward0_Dpt-2_wLumi
 cd ZDCStudies && ./plotAndFit.exe ../ntuple.root $TAG 1 && ./plotMeanSigmaVsLumi.exe ${TAG}_leveled
 cd ../HFStudies && ./plotHF.exe ../ntuple.root $TAG 1
 ```
+
+## 7. Lumi-dependent ZDC recalibration (prototype)
+
+Corrects ZDCsum Plus/Minus as a function of instLumi so that the noise core (q90/q95 of the 0n side), the 1n peak (mean and width) and the 2n peak are the same as in the lowest-lumi bin. Monotone cubic (PCHIP, C1) map per side with knots `0, n90, n95, m1-s1, m1, m1+s1, m2`, each knot position a pol2 in instLumi (`ZDCStudies/zdcLumiCorrection.h`).
+
+```bash
+cd ZDCStudies
+make calibZDC.exe plotAndFit.exe
+./calibZDC.exe <ntuple.root> <TAG>               # UNCORRECTED data, non-leveled -> ./zdcLumiCorrParams.h + outputs/calib_<TAG>/
+make plotAndFit.exe                              # rebuild so the new parameters are compiled in
+./plotAndFit.exe <ntuple.root> <TAG> 0 0 1       # applyCorr=1 (5th arg, smooth map) -> outputs/<TAG>_notleveled_corr/ (map_*, slope_*, *_ratio_to_bin0 pdfs)
+./plotAndFit.exe <ntuple.root> <TAG> 0 0 2       # applyCorr=2: legacy piecewise-linear map -> ..._corrlin/ (for comparison)
+./plotMeanSigmaVsLumi.exe <TAG>_notleveled_corr
+```
+
+Always derive the parameters from the uncorrected ntuple (`calibZDC` never applies the correction). `analyze.cc` / the ntuple are untouched; apply with `zdccorr::correct(zdc, instLumi, zdccorr::kPlus|kMinus)`.
